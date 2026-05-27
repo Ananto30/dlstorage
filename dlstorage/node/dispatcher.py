@@ -1,12 +1,7 @@
 import logging
 
-from dlstorage.connection_pool.interface import (AsyncConnectionPool,
-                                                 ConnectionPool)
-from dlstorage.discovery.gossip import GossipDiscovery
-from dlstorage.discovery.interface import Discovery
-from dlstorage.ring.interface import Ring
 from dlstorage.store.interface import VersionedStore
-from dlstorage.types import Message, MessageType, NodeInfo
+from dlstorage.types import Message, MessageType
 
 logger = logging.getLogger(__name__)
 

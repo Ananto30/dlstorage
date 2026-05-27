@@ -1,32 +1,12 @@
 import asyncio
 import logging
-import pickle
 
+from dlstorage.connection_pool.wire import recv_message_async, send_message_async
 from dlstorage.types import Message
 
 from .interface import AsyncConnectionPool as AsyncConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
-
-HEADER_SIZE = 4  # 4-byte big-endian length prefix
-
-# Wire format: pickle is used so that Message payloads can carry arbitrary
-# Python objects (e.g. any value stored in the LocalStore).
-# All nodes in the cluster are trusted; do NOT expose the TCP port publicly.
-
-
-async def send_message(writer: asyncio.StreamWriter, msg: Message) -> None:
-    data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
-    header = len(data).to_bytes(HEADER_SIZE, "big")
-    writer.write(header + data)
-    await writer.drain()
-
-
-async def recv_message(reader: asyncio.StreamReader) -> Message | None:
-    header = await reader.readexactly(HEADER_SIZE)
-    length = int.from_bytes(header, "big")
-    data = await reader.readexactly(length)
-    return pickle.loads(data)  # noqa: S301 – trusted internal network only
 
 
 class AsyncConnectionPool(AsyncConnectionPoolProtocol):
@@ -86,9 +66,9 @@ class AsyncConnectionPool(AsyncConnectionPoolProtocol):
                 logger.debug("Cannot connect to %s: %s", address, e)
                 return None
         try:
-            await send_message(writer, msg)
+            await send_message_async(writer, msg)
             assert reader is not None
-            response = await asyncio.wait_for(recv_message(reader), timeout=5.0)
+            response = await asyncio.wait_for(recv_message_async(reader), timeout=5.0)
             # Return to pool (no lock needed – put_nowait is thread-safe in asyncio)
             if not writer.is_closing():
                 try:
@@ -108,8 +88,10 @@ class AsyncConnectionPool(AsyncConnectionPoolProtocol):
                 logger.debug("Cannot connect to %s: %s", address, e2)
                 return None
             try:
-                await send_message(writer, msg)
-                response = await asyncio.wait_for(recv_message(reader), timeout=5.0)
+                await send_message_async(writer, msg)
+                response = await asyncio.wait_for(
+                    recv_message_async(reader), timeout=5.0
+                )
                 if not writer.is_closing():
                     try:
                         q.put_nowait((reader, writer))

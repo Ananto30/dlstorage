@@ -32,36 +32,12 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 
+from dlstorage.connection_pool.wire import HEADER_SIZE
 from dlstorage.types import Message
 
 from .interface import ConnectionPool as ConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
-
-HEADER_SIZE = 4  # must match pool.py
-
-
-def send_message(sock: socket.socket, msg: Message) -> None:
-    data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
-    header = len(data).to_bytes(HEADER_SIZE, "big")
-    sock.sendall(header + data)  # blocking; instant on loopback
-
-
-def recv_message(sock: socket.socket) -> Message:
-    """Blocking recv – only used outside the selector (e.g. warm-up pings)."""
-
-    def _exact(n: int) -> bytes:
-        buf, pos = bytearray(n), 0
-        mv = memoryview(buf)
-        while pos < n:
-            got = sock.recv_into(mv[pos:], n - pos)
-            if got == 0:
-                raise EOFError("connection closed")
-            pos += got
-        return bytes(buf)
-
-    length = int.from_bytes(_exact(HEADER_SIZE), "big")
-    return pickle.loads(_exact(length))  # noqa: S301 – trusted internal network
 
 
 @dataclass

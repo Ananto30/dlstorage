@@ -3,8 +3,7 @@ import logging
 import random
 import time
 
-from dlstorage.connection_pool.interface import (AsyncConnectionPool,
-                                                 ConnectionPool)
+from dlstorage.connection_pool.interface import AsyncConnectionPool, ConnectionPool
 from dlstorage.discovery.gossip import GossipDiscovery
 from dlstorage.discovery.interface import Discovery
 from dlstorage.ring.interface import Ring

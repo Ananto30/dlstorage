@@ -15,38 +15,12 @@ import pickle
 import queue
 import socket
 
+from dlstorage.connection_pool.wire import recv_message, send_message
 from dlstorage.types import Message
 
 from .interface import ConnectionPool as ConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
-
-HEADER_SIZE = 4  # must match pool.py
-
-
-def _recvexactly(sock: socket.socket, n: int) -> bytes:
-    buf = bytearray(n)
-    view = memoryview(buf)
-    pos = 0
-    while pos < n:
-        received = sock.recv_into(view[pos:], n - pos)
-        if received == 0:
-            raise EOFError("connection closed")
-        pos += received
-    return bytes(buf)
-
-
-def send_message(sock: socket.socket, msg: Message) -> None:
-    data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
-    header = len(data).to_bytes(HEADER_SIZE, "big")
-    sock.sendall(header + data)
-
-
-def recv_message(sock: socket.socket) -> Message:
-    header = _recvexactly(sock, HEADER_SIZE)
-    length = int.from_bytes(header, "big")
-    data = _recvexactly(sock, length)
-    return pickle.loads(data)  # noqa: S301 – trusted internal network only
 
 
 class ConnectionPool(ConnectionPoolProtocol):

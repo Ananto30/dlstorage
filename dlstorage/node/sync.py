@@ -25,8 +25,8 @@ import time
 from typing import Any
 
 from dlstorage.connection_pool.interface import ConnectionPool
-from dlstorage.connection_pool.mux import (MuxConnectionPool, recv_message,
-                                           send_message)
+from dlstorage.connection_pool.mux import MuxConnectionPool
+from dlstorage.connection_pool.wire import recv_message, send_message
 from dlstorage.consistency.interface import MergeResolver
 from dlstorage.consistency.lww import LWW
 from dlstorage.discovery import Discovery

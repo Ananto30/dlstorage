@@ -25,6 +25,7 @@ from dlstorage.types import Message, MessageType
 ADDRS = ["127.0.0.1:7201", "127.0.0.1:7202", "127.0.0.1:7203"]
 REPLICATION = 3
 
+
 def _node_process(
     addr: str,
     all_addrs: list[str],

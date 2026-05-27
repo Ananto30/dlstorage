@@ -23,10 +23,11 @@ import logging
 import time
 from typing import Any
 
-from dlstorage.connection_pool.async_ import (AsyncConnectionPool,
-                                              recv_message, send_message)
-from dlstorage.connection_pool.interface import \
-    AsyncConnectionPool as AsyncConnectionPoolT
+from dlstorage.connection_pool.async_ import AsyncConnectionPool
+from dlstorage.connection_pool.interface import (
+    AsyncConnectionPool as AsyncConnectionPoolT,
+)
+from dlstorage.connection_pool.wire import recv_message_async, send_message_async
 from dlstorage.consistency.interface import AsyncMergeResolver
 from dlstorage.consistency.lww import AsyncLWW
 from dlstorage.discovery import Discovery
@@ -275,14 +276,14 @@ class AsyncStorageNode:
         peer_addr = writer.get_extra_info("peername")
         try:
             while True:
-                msg = await recv_message(reader)
+                msg = await recv_message_async(reader)
                 assert msg
                 response = (
                     self._gossip.dispatch(msg)
                     if msg.type.is_gossip()
                     else dispatch(msg, self._store)
                 )
-                await send_message(writer, response)
+                await send_message_async(writer, response)
         except asyncio.IncompleteReadError:
             pass  # client closed the connection
         except asyncio.CancelledError:
