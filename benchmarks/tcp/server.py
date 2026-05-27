@@ -1,5 +1,5 @@
-import socket
 import argparse
+import socket
 
 HOST = "0.0.0.0"
 BUF_SIZE = 1024

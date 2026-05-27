@@ -5,19 +5,28 @@ from typing import Any
 
 class MessageType(str, Enum):
     # Gossip
-    PING          = "ping"
-    PONG          = "pong"
-    PEER_LIST     = "peer_list"
+    PING = "ping"
+    PONG = "pong"
+    PEER_LIST = "peer_list"
     PEER_ANNOUNCE = "peer_announce"
-    PEER_LEAVE    = "peer_leave"
+    PEER_LEAVE = "peer_leave"
     # Store
-    GET           = "get"
-    SET           = "set"
-    DELETE        = "delete"
+    GET = "get"
+    SET = "set"
+    DELETE = "delete"
     # Responses
-    OK            = "ok"
-    NOT_FOUND     = "not_found"
-    ERROR         = "error"
+    OK = "ok"
+    NOT_FOUND = "not_found"
+    ERROR = "error"
+
+    def is_gossip(self) -> bool:
+        return self in {
+            MessageType.PING,
+            MessageType.PONG,
+            MessageType.PEER_LIST,
+            MessageType.PEER_ANNOUNCE,
+            MessageType.PEER_LEAVE,
+        }
 
 
 @dataclass

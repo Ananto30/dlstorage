@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Redis benchmark (vs dlstorage)")
     p.add_argument("--ops", type=int, default=100_000)
     p.add_argument("--concurrency", type=int, default=64)
-    p.add_argument("--value-size", type=int, default=4*1024)
+    p.add_argument("--value-size", type=int, default=4 * 1024)
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--port", type=int, default=6379)
     p.add_argument(

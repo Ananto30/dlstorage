@@ -42,7 +42,7 @@ try:
 except ImportError:
     _LOOP = "asyncio"
 
-from dlstorage import StaticDiscovery, AsyncStorageNode
+from dlstorage import AsyncStorageNode, StaticDiscovery
 from dlstorage.ring import RendezvousRing
 from dlstorage.store import LocalStore
 from dlstorage.types import Message, MessageType, NodeInfo
@@ -75,7 +75,9 @@ def section(title: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def _bench_coro(nodes: list[AsyncStorageNode], ops: int, concurrency: int) -> None:
+async def _bench_coro(
+    nodes: list[AsyncStorageNode], ops: int, concurrency: int
+) -> None:
     counter = [0]
 
     async def worker():
@@ -258,10 +260,10 @@ async def _step_timing(ops: int) -> None:
 
     baseline = full_set_ns or 1
     print(f"\n  {'Operation':<26}  {'Median':>10}  {'% of node.set':>14}  Notes")
-    print(f"  {'─'*26}  {'─'*10}  {'─'*14}  {'─'*30}")
+    print(f"  {'─' * 26}  {'─' * 10}  {'─' * 14}  {'─' * 30}")
     for name, ns, note in rows:
         frac = ns / baseline
-        print(f"  {name:<26}  {fmt_ns(ns):>10}  {frac*100:>13.1f}%  {note}")
+        print(f"  {name:<26}  {fmt_ns(ns):>10}  {frac * 100:>13.1f}%  {note}")
 
     print()
     protocol_overhead = raw_rtt_ns + enc_ns + dec_ns

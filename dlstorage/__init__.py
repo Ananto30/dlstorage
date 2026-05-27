@@ -1,10 +1,16 @@
-from .discovery import DNSDiscovery, Discovery, GossipDiscovery, StaticDiscovery
-from .node import StorageNode, AsyncStorageNode
+from .consistency import FHW, LWW, MergeResolver
+from .discovery import (Discovery, DNSDiscovery, GossipDiscovery,
+                        StaticDiscovery)
+from .node.async_ import AsyncStorageNode
+from .node.sync import StorageNode
 from .ring import RendezvousRing
-from .store import LocalStore
+from .store import LocalLWWStore, LocalStore
 from .types import Message, MessageType, NodeInfo
 
 __all__ = [
+    "MergeResolver",
+    "FHW",
+    "LWW",
     "Discovery",
     "DNSDiscovery",
     "GossipDiscovery",
@@ -13,6 +19,7 @@ __all__ = [
     "AsyncStorageNode",
     "RendezvousRing",
     "LocalStore",
+    "LocalLWWStore",
     "Message",
     "MessageType",
     "NodeInfo",

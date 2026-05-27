@@ -9,9 +9,9 @@ Install extras:
     uv add flask
 
 Run a 3-node cluster (three terminals):
-    DLSTORAGE_PORT=7001 DLSTORAGE_PEERS=127.0.0.1:7002,127.0.0.1:7003 python examples/flask_server.py
-    DLSTORAGE_PORT=7002 DLSTORAGE_PEERS=127.0.0.1:7001,127.0.0.1:7003 FLASK_PORT=8002 python examples/flask_server.py
-    DLSTORAGE_PORT=7003 DLSTORAGE_PEERS=127.0.0.1:7001,127.0.0.1:7002 FLASK_PORT=8003 python examples/flask_server.py
+    DLSTORAGE_PORT=7001 FLASK_PORT=8001 python examples/flask_server.py
+    DLSTORAGE_PORT=7002 FLASK_PORT=8002 python examples/flask_server.py
+    DLSTORAGE_PORT=7003 FLASK_PORT=8003 python examples/flask_server.py
 
 Note: gunicorn prefork workers (default) fork after module load, so the node's
 internal threads are not cloned into workers.  Use --worker-class gthread or
@@ -21,31 +21,33 @@ internal threads are not cloned into workers.  Use --worker-class gthread or
 from __future__ import annotations
 
 import atexit
+import logging
 import os
+import sys
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
 
 from flask import Flask, abort, jsonify, request
 
-from dlstorage import StaticDiscovery
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from dlstorage import GossipDiscovery
 from dlstorage.node.sync import StorageNode
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+DLS_HOST = os.getenv("DLSTORAGE_HOST", "127.0.0.1")
+DLS_PORT = int(os.getenv("DLSTORAGE_PORT", "7001"))
+SEED_ADDR = os.getenv("DLSTORAGE_SEED", "127.0.0.1:7001")
 
-HOST = os.getenv("DLSTORAGE_HOST", "127.0.0.1")
-PORT = int(os.getenv("DLSTORAGE_PORT", "7001"))
-PEERS = [
-    p
-    for p in os.getenv("DLSTORAGE_PEERS", "127.0.0.1:7002,127.0.0.1:7003").split(",")
-    if p
-]
-REPLICATION = int(os.getenv("DLSTORAGE_REPLICATION", "1"))
 
-# ---------------------------------------------------------------------------
-# Node — started once at import time, stopped on process exit
-# ---------------------------------------------------------------------------
-
-_node = StorageNode(StaticDiscovery(PEERS), HOST, PORT, replication=REPLICATION)
+_node = StorageNode(
+    GossipDiscovery(SEED_ADDR),
+    DLS_HOST,
+    DLS_PORT,
+)
 _node.start()
 
 
@@ -53,10 +55,6 @@ _node.start()
 def _stop_node() -> None:
     _node.stop()
 
-
-# ---------------------------------------------------------------------------
-# App and routes
-# ---------------------------------------------------------------------------
 
 app = Flask(__name__)
 
@@ -71,7 +69,9 @@ def get_key(key: str):
 
 @app.put("/keys/<key>")
 def set_key(key: str):
-    value = request.get_json(force=True)
+    # value = request.get_json(force=True)
+    # value in query param
+    value = request.args.get("value", "")
     ok = _node.set(key, value)
     if not ok:
         abort(500, "write failed on all replicas")

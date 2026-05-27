@@ -1,9 +1,12 @@
 from typing import Protocol, runtime_checkable
+
 from dlstorage.types import NodeInfo
 
 
 @runtime_checkable
 class Ring(Protocol):
+    """Consistent hashing ring protocol."""
+
     def add(self, node: NodeInfo) -> None: ...
     def remove(self, node: NodeInfo) -> None: ...
     def get_node(self, key: str) -> NodeInfo | None: ...

@@ -40,6 +40,7 @@ from dlstorage import AsyncStorageNode, GossipDiscovery
 
 DLS_HOST = os.getenv("DLSTORAGE_HOST", "127.0.0.1")
 DLS_PORT = int(os.getenv("DLSTORAGE_PORT", "7001"))
+SEED_ADDR = os.getenv("DLSTORAGE_SEED", "127.0.0.1:7001")
 
 _node: AsyncStorageNode | None = None
 
@@ -48,7 +49,7 @@ _node: AsyncStorageNode | None = None
 async def lifespan(app: FastAPI):
     global _node
     _node = AsyncStorageNode(
-        GossipDiscovery("127.0.0.1:7001"),
+        GossipDiscovery(SEED_ADDR),
         DLS_HOST,
         DLS_PORT,
     )
@@ -65,11 +66,6 @@ def _node_or_503() -> AsyncStorageNode:
     if _node is None:
         raise HTTPException(status_code=503, detail="node not ready")
     return _node
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 
 @app.get("/keys/{key}")

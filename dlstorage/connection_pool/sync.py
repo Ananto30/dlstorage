@@ -16,6 +16,7 @@ import queue
 import socket
 
 from dlstorage.types import Message
+
 from .interface import ConnectionPool as ConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)

@@ -18,11 +18,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from benchmarks.framework import async_run_phase, print_results, try_uvloop
-from dlstorage import StaticDiscovery, AsyncStorageNode
+from dlstorage import AsyncStorageNode, StaticDiscovery
+from dlstorage.consistency.fhw import AsyncFHW
 from dlstorage.types import Message, MessageType
 
 ADDRS = ["127.0.0.1:7101", "127.0.0.1:7102", "127.0.0.1:7103"]
-
+REPLICATION = 3
 
 async def _node_loop(
     host: str,
@@ -34,10 +35,11 @@ async def _node_loop(
 ) -> None:
     loop = asyncio.get_event_loop()
     node = AsyncStorageNode(
-        StaticDiscovery([a for a in all_addrs if a != f"{host}:{port}"]),
+        StaticDiscovery(all_addrs),
         host,
         port,
-        replication=1,
+        replication=REPLICATION,
+        # merge_resolver=AsyncFHW(),
     )
     await node.start()
     await asyncio.sleep(0.05)
@@ -117,7 +119,7 @@ def main(ops: int, concurrency: int, value_size: int) -> None:
     print(f"  concurrency : {concurrency}  (per node)")
     print(f"  value size  : {value_size} bytes")
     print(f"  nodes       : {n}")
-    print(f"  replication : 1\n")
+    print(f"  replication : {REPLICATION}\n")
 
     for p in procs:
         p.start()
@@ -162,7 +164,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="dlstorage async benchmark")
     p.add_argument("--ops", type=int, default=100_000)
     p.add_argument("--concurrency", type=int, default=64)
-    p.add_argument("--value-size", type=int, default=4*1024)
+    p.add_argument("--value-size", type=int, default=4 * 1024)
     return p.parse_args()
 
 

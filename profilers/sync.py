@@ -30,8 +30,7 @@ import socket
 import threading
 import time
 
-from dlstorage import StorageNode
-from dlstorage import StaticDiscovery
+from dlstorage import StaticDiscovery, StorageNode
 from dlstorage.connection_pool.mux import MuxConnectionPool
 from dlstorage.ring import RendezvousRing
 from dlstorage.store import LocalStore

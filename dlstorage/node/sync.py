@@ -25,17 +25,93 @@ import time
 from typing import Any
 
 from dlstorage.connection_pool.interface import ConnectionPool
-from dlstorage.connection_pool.mux import MuxConnectionPool, recv_message, send_message
-from dlstorage.discovery import Discovery, GossipDiscovery
-from dlstorage.ring import RendezvousRing
-from dlstorage.ring import Ring
-from dlstorage.store import LocalStore
+from dlstorage.connection_pool.mux import (MuxConnectionPool, recv_message,
+                                           send_message)
+from dlstorage.consistency.interface import MergeResolver
+from dlstorage.consistency.lww import LWW
+from dlstorage.discovery import Discovery
+from dlstorage.node.dispatcher import dispatch
+from dlstorage.peer_comm.gossip import Gossip
+from dlstorage.ring import RendezvousRing, Ring
+from dlstorage.store import LocalLWWStore
 from dlstorage.types import Message, MessageType, NodeInfo
+
+from .interface import ReplicaHandle
 from .interface import StorageNode as SyncStorageNodeProto
 
 logger = logging.getLogger(__name__)
 
-_PURGE_INTERVAL = 30.0  # seconds between TTL-expiry sweeps
+_PURGE_INTERVAL = 10.0  # seconds between TTL-expiry sweeps
+
+
+class _SyncLocalHandle(ReplicaHandle):
+    """ReplicaHandle backed by the local store (no network)."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: LocalLWWStore) -> None:
+        self._store = store
+
+    def get(self, key: str) -> Any:
+        return self._store.get(key)
+
+    def get_versioned(self, key: str) -> tuple[Any, int, bool] | None:
+        return self._store.get_versioned(key)
+
+    def set(self, key: str, value: Any, ttl: float | None, ts: int) -> bool:
+        return self._store.set(key, value, ttl, ts=ts)
+
+    def delete(self, key: str, ts: int) -> bool:
+        return self._store.delete(key, ts=ts)
+
+
+class _SyncRemoteHandle(ReplicaHandle):
+    """ReplicaHandle backed by the sync connection pool."""
+
+    __slots__ = ("_host", "_port", "_pool")
+
+    def __init__(self, node: NodeInfo, pool: ConnectionPool) -> None:
+        self._host = node.host
+        self._port = node.port
+        self._pool = pool
+
+    def get(self, key: str) -> Any:
+        result = self.get_versioned(key)
+        if result is None:
+            return None
+        value, _, is_tombstone = result
+        return None if is_tombstone else value
+
+    def get_versioned(self, key: str) -> tuple[Any, int, bool] | None:
+        resp = self._pool.execute(
+            self._host, self._port, Message(MessageType.GET, {"key": key})
+        )
+        if resp is None:
+            return None
+        if resp.type == MessageType.OK:
+            return (resp.payload.get("value"), resp.payload.get("ts", 0), False)
+        if resp.type == MessageType.NOT_FOUND:
+            ts = resp.payload.get("ts", 0)
+            is_tombstone = resp.payload.get("tombstone", False)
+            return (None, ts, is_tombstone) if ts > 0 else None
+        return None
+
+    def set(self, key: str, value: Any, ttl: float | None, ts: int) -> bool:
+        payload: dict[str, Any] = {"key": key, "value": value, "ts": ts}
+        if ttl is not None:
+            payload["ttl"] = ttl
+        resp = self._pool.execute(
+            self._host, self._port, Message(MessageType.SET, payload)
+        )
+        return resp is not None and resp.type == MessageType.OK
+
+    def delete(self, key: str, ts: int) -> bool:
+        resp = self._pool.execute(
+            self._host,
+            self._port,
+            Message(MessageType.DELETE, {"key": key, "ts": ts}),
+        )
+        return resp is not None and resp.type == MessageType.OK
 
 
 class StorageNode(SyncStorageNodeProto):
@@ -65,19 +141,22 @@ class StorageNode(SyncStorageNodeProto):
         *,
         ring: Ring = RendezvousRing(),
         connection_pool: ConnectionPool = MuxConnectionPool(max_per_peer=64),
+        merge_resolver: MergeResolver = LWW(),
         replication: int = 3,
         backlog: int = 256,
     ) -> None:
         self.info = NodeInfo(host, port)
         self.discovery = discovery
-        self._store = LocalStore()
+        self._store = LocalLWWStore()
         self._ring = ring
         self._pool = connection_pool
+        self._merge_resolver = merge_resolver
         self._replication = replication
         self._backlog = backlog
         self._server_sock: socket.socket | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._gossip = Gossip(self.info, self._ring, self._pool, self.discovery)
 
     # Lifecycle
 
@@ -102,16 +181,22 @@ class StorageNode(SyncStorageNodeProto):
             daemon=True,
             name=f"dlstorage-purge-{self.info.port}",
         )
+        gossip_thread = threading.Thread(
+            target=self._gossip.gossip_loop,
+            daemon=True,
+            name=f"dlstorage-gossip-{self.info.port}",
+        )
         accept_thread.start()
         purge_thread.start()
-        self._threads = [accept_thread, purge_thread]
+        gossip_thread.start()
+        self._threads = [accept_thread, purge_thread, gossip_thread]
 
         logger.info("SyncStorageNode started at %s", self.info.address)
-        self._announce_join()
+        self._gossip.announce_join()
 
     def stop(self) -> None:
         """Announce departure, stop the server and background threads."""
-        self._announce_leave()
+        self._gossip.announce_leave()
         self._stop.set()
         if self._server_sock:
             try:
@@ -133,107 +218,46 @@ class StorageNode(SyncStorageNodeProto):
     # Public store API
 
     def get(self, key: str) -> Any:
-        """Return value for *key*, or ``None`` if absent/expired.
-
-        Tries the same replica set that set() wrote to so the value is found
-        even when the ring changed after the write (peer left / rejoined).
-        """
-        nodes = self._ring.get_nodes(key, n=self._replication)
-        if not nodes:
+        """Return value for *key*, resolved by the consistency policy."""
+        candidates = self._ring.get_nodes(key, n=self._replication)
+        if not candidates:
             return self._store.get(key)
-        for node in nodes:
-            if node == self.info:
-                value = self._store.get(key)
-                if value is not None:
-                    return value
-            else:
-                resp = self._pool.execute(
-                    node.host,
-                    node.port,
-                    Message(MessageType.GET, {"key": key}),
-                )
-                if resp and resp.type == MessageType.OK:
-                    return resp.payload.get("value")
-        return None
+        return self._merge_resolver.read_resolve(key, self._make_handles(candidates))
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
         """Store *value* under *key* on the top-*replication* ring nodes."""
         nodes = self._ring.get_nodes(key, n=self._replication)
+        ts = time.time_ns()
         if not nodes:
-            self._store.set(key, value, ttl)
+            self._store.set(key, value, ttl, ts=ts)
             return True
-        return any(self._set_on(n, key, value, ttl) for n in nodes)
+        return any(h.set(key, value, ttl, ts) for h in self._make_handles(nodes))
 
     def delete(self, key: str) -> bool:
         """Delete *key* from the top-*replication* ring nodes."""
         nodes = self._ring.get_nodes(key, n=self._replication)
+        ts = time.time_ns()
         if not nodes:
-            return self._store.delete(key)
-        return any(self._delete_on(n, key) for n in nodes)
+            return self._store.delete(key, ts=ts)
+        return any(h.delete(key, ts) for h in self._make_handles(nodes))
 
-    # Internal: per-node store helpers
-
-    def _set_on(self, node: NodeInfo, key: str, value: Any, ttl: float | None) -> bool:
-        if node == self.info:
-            self._store.set(key, value, ttl)
-            return True
-        payload: dict[str, Any] = {"key": key, "value": value}
-        if ttl is not None:
-            payload["ttl"] = ttl
-        resp = self._pool.execute(
-            node.host, node.port, Message(MessageType.SET, payload)
-        )
-        return resp is not None and resp.type == MessageType.OK
-
-    def _delete_on(self, node: NodeInfo, key: str) -> bool:
-        if node == self.info:
-            return self._store.delete(key)
-        resp = self._pool.execute(
-            node.host,
-            node.port,
-            Message(MessageType.DELETE, {"key": key}),
-        )
-        return resp is not None and resp.type == MessageType.OK
+    def _make_handles(self, nodes: list[NodeInfo]) -> list[ReplicaHandle]:
+        """Build ReplicaHandle instances for the given ring nodes."""
+        return [
+            (
+                _SyncLocalHandle(self._store)
+                if n == self.info
+                else _SyncRemoteHandle(n, self._pool)
+            )
+            for n in nodes
+        ]
 
     # Bootstrap
 
     def _bootstrap(self) -> None:
-        if isinstance(self.discovery, GossipDiscovery):
-            self._gossip_bootstrap()
-            return
+        self._gossip.sync_peers()
         for peer in self.discovery.get_peers():
             self._ring.add(peer)
-
-    def _gossip_bootstrap(self) -> None:
-        assert isinstance(self.discovery, GossipDiscovery)
-        seed = self.discovery.seed
-        resp = self._pool.execute(
-            seed.host,
-            seed.port,
-            Message(MessageType.PEER_LIST, {"requester": self.info.to_dict()}),
-        )
-        if resp and resp.type == MessageType.PEER_LIST:
-            for raw in resp.payload.get("peers", []):
-                peer = NodeInfo.from_dict(raw)
-                self.discovery.add_peer(peer)
-                self._ring.add(peer)
-        self.discovery.add_peer(seed)
-        self._ring.add(seed)
-
-    # Peer announcements
-
-    def _announce_join(self) -> None:
-        self._broadcast(
-            Message(MessageType.PEER_ANNOUNCE, {"peer": self.info.to_dict()})
-        )
-
-    def _announce_leave(self) -> None:
-        self._broadcast(Message(MessageType.PEER_LEAVE, {"peer": self.info.to_dict()}))
-
-    def _broadcast(self, msg: Message) -> None:
-        for peer in self._ring.nodes():
-            if peer != self.info:
-                self._pool.execute(peer.host, peer.port, msg)
 
     # TCP server
 
@@ -258,7 +282,11 @@ class StorageNode(SyncStorageNodeProto):
         try:
             while True:
                 msg = recv_message(sock)
-                response = self._dispatch(msg)
+                response = (
+                    self._gossip.dispatch(msg)
+                    if msg.type.is_gossip()
+                    else dispatch(msg, self._store)
+                )
                 send_message(sock, response)
         except EOFError:
             pass
@@ -266,58 +294,6 @@ class StorageNode(SyncStorageNodeProto):
             logger.debug("Client handler error (%s): %s", addr, exc)
         finally:
             sock.close()
-
-    def _dispatch(self, msg: Message) -> Message:
-        match msg.type:
-            case MessageType.PING:
-                return Message(MessageType.PONG, {"node": self.info.to_dict()})
-
-            case MessageType.PEER_LIST:
-                peers = [n.to_dict() for n in self._ring.nodes() if n != self.info]
-                return Message(MessageType.PEER_LIST, {"peers": peers})
-
-            case MessageType.PEER_ANNOUNCE:
-                peer = NodeInfo.from_dict(msg.payload["peer"])
-                if peer not in self._ring.nodes():
-                    self._ring.add(peer)
-                    if isinstance(self.discovery, GossipDiscovery):
-                        self.discovery.add_peer(peer)
-                return Message(MessageType.OK, {})
-
-            case MessageType.PEER_LEAVE:
-                peer = NodeInfo.from_dict(msg.payload["peer"])
-                self._ring.remove(peer)
-                if isinstance(self.discovery, GossipDiscovery):
-                    self.discovery.remove_peer(peer)
-                self._pool.close_peer(peer.host, peer.port)
-                return Message(MessageType.OK, {})
-
-            case MessageType.GET:
-                key = msg.payload["key"]
-                value = self._store.get(key)
-                if value is None:
-                    return Message(MessageType.NOT_FOUND, {"key": key})
-                return Message(MessageType.OK, {"key": key, "value": value})
-
-            case MessageType.SET:
-                key = msg.payload["key"]
-                value = msg.payload["value"]
-                ttl = msg.payload.get("ttl")
-                self._store.set(key, value, ttl)
-                return Message(MessageType.OK, {"key": key})
-
-            case MessageType.DELETE:
-                key = msg.payload["key"]
-                deleted = self._store.delete(key)
-                if deleted:
-                    return Message(MessageType.OK, {"key": key})
-                return Message(MessageType.NOT_FOUND, {"key": key})
-
-            case _:
-                return Message(
-                    MessageType.ERROR,
-                    {"error": f"unknown message type: {msg.type}"},
-                )
 
     # Background: TTL purge
 

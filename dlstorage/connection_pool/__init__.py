@@ -1,2 +1,6 @@
-from .interface import ConnectionPool, AsyncConnectionPool
-__all__ = ["ConnectionPool", "AsyncConnectionPool", ]
+from .interface import AsyncConnectionPool, ConnectionPool
+
+__all__ = [
+    "ConnectionPool",
+    "AsyncConnectionPool",
+]

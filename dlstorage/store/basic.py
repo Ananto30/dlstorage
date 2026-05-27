@@ -1,25 +1,30 @@
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any
+
+from dlstorage.store.interface import Store
 
 
-class LocalStore:
+class LocalStore(Store):
     """
     Simple thread-safe in-memory store.
     Stores any Python object. Supports optional TTL per key.
     """
 
     def __init__(self):
-        self._data: dict[str, tuple[Any, float | None]] = (
-            {}
-        )  # key -> (value, expires_at)
+        self._data: dict[
+            str, tuple[Any, float | None]
+        ] = {}  # key -> (value, expires_at)
         self._lock = threading.RLock()
 
-    def set(self, key: str, value: Any, ttl: float | None = None) -> None:
+    def set(
+        self, key: str, value: Any, ttl: float | None = None, **kwargs: Any
+    ) -> bool:
         """Store a value. ttl is in seconds; None means no expiry."""
         expires_at = time.monotonic() + ttl if ttl is not None else None
         with self._lock:
             self._data[key] = (value, expires_at)
+            return True
 
     def get(self, key: str) -> Any:
         """Return value or None if missing/expired."""
@@ -33,7 +38,7 @@ class LocalStore:
                 return None
             return value
 
-    def delete(self, key: str) -> bool:
+    def delete(self, key: str, **kwargs: Any) -> bool:
         """Delete a key. Returns True if it existed."""
         with self._lock:
             return self._data.pop(key, None) is not None

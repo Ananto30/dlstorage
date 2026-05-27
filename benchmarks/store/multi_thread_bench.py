@@ -18,13 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from benchmarks.framework import (
-    SyncProgress,
-    fmt_ns,
-    percentile,
-    print_results,
-    sync_run_phase,
-)
+from benchmarks.framework import (SyncProgress, fmt_ns, percentile,
+                                  print_results, sync_run_phase)
 from dlstorage.store import LocalStore
 
 

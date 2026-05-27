@@ -3,6 +3,7 @@ import logging
 import pickle
 
 from dlstorage.types import Message
+
 from .interface import AsyncConnectionPool as AsyncConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ class AsyncConnectionPool(AsyncConnectionPoolProtocol):
                 writer.close()
                 return None
 
-    async def close_peer(self, host: str, port: int) -> None:
+    def close_peer(self, host: str, port: int) -> None:
         """Drain and close all pooled connections for one peer."""
         address = f"{host}:{port}"
         q = self._queues.pop(address, None)
@@ -133,7 +134,7 @@ class AsyncConnectionPool(AsyncConnectionPoolProtocol):
             except asyncio.QueueEmpty:
                 break
 
-    async def close_all(self) -> None:
+    def close_all(self) -> None:
         for q in self._queues.values():
             while not q.empty():
                 try:

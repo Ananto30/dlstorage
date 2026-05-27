@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dlstorage.types import NodeInfo
 from dlstorage.discovery.interface import Discovery
+from dlstorage.types import NodeInfo
 
 
 class DNSDiscovery(Discovery):

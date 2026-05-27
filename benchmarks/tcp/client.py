@@ -1,6 +1,6 @@
+import argparse
 import socket
 import time
-import argparse
 
 PAYLOAD_SIZE = 1024  # 1 KB
 

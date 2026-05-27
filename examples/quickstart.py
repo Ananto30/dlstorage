@@ -7,7 +7,7 @@ Run with:  python examples/quickstart.py
 import asyncio
 import logging
 
-from dlstorage import StaticDiscovery, AsyncStorageNode
+from dlstorage import AsyncStorageNode, StaticDiscovery
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 

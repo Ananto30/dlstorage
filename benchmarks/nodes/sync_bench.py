@@ -17,14 +17,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from dlstorage.connection_pool.sync import ConnectionPool
 from benchmarks.framework import print_results, sync_run_phase
-from dlstorage import StaticDiscovery
-from dlstorage import StorageNode
+from dlstorage import StaticDiscovery, StorageNode
+from dlstorage.connection_pool.sync import ConnectionPool
 from dlstorage.types import Message, MessageType
 
 ADDRS = ["127.0.0.1:7201", "127.0.0.1:7202", "127.0.0.1:7203"]
-
+REPLICATION = 3
 
 def _node_process(
     addr: str,
@@ -35,11 +34,11 @@ def _node_process(
 ) -> None:
     host, port_s = addr.split(":")
     node = StorageNode(
-        StaticDiscovery([a for a in all_addrs if a != addr]),
+        StaticDiscovery(all_addrs),
         host,
         int(port_s),
+        replication=REPLICATION,
         # connection_pool=ConnectionPool(max_per_peer=64),
-        replication=1,
     )
     node.start()
     time.sleep(0.1)
@@ -125,7 +124,7 @@ def main(ops: int, concurrency: int, value_size: int) -> None:
     print(f"  concurrency : {concurrency}  (OS threads, per node)")
     print(f"  value size  : {value_size} bytes")
     print(f"  nodes       : {n}")
-    print(f"  replication : 1\n")
+    print(f"  replication : {REPLICATION}\n")
 
     for p in procs:
         p.start()
@@ -171,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--concurrency", type=int, default=64, help="OS threads per node (default 64)"
     )
-    p.add_argument("--value-size", type=int, default=4*1024)
+    p.add_argument("--value-size", type=int, default=4 * 1024)
     return p.parse_args()
 
 

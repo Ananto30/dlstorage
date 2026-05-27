@@ -1,6 +1,7 @@
 import hashlib
-from dlstorage.types import NodeInfo
+
 from dlstorage.ring.interface import Ring
+from dlstorage.types import NodeInfo
 
 
 def _score(node: NodeInfo, key: str) -> int:
