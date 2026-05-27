@@ -1,6 +1,6 @@
 import hashlib
-from typing import Sequence
-from .types import NodeInfo
+from dlstorage.types import NodeInfo
+from dlstorage.ring.interface import Ring
 
 
 def _score(node: NodeInfo, key: str) -> int:
@@ -9,7 +9,7 @@ def _score(node: NodeInfo, key: str) -> int:
     return int.from_bytes(h, "big")
 
 
-class RendezvousRing:
+class RendezvousRing(Ring):
     """
     Rendezvous (HRW) hashing.
 

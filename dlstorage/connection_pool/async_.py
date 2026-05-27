@@ -2,7 +2,8 @@ import asyncio
 import logging
 import pickle
 
-from .types import Message
+from dlstorage.types import Message
+from .interface import AsyncConnectionPool as AsyncConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ async def recv_message(reader: asyncio.StreamReader) -> Message | None:
     return pickle.loads(data)  # noqa: S301 – trusted internal network only
 
 
-class ConnectionPool:
+class AsyncConnectionPool(AsyncConnectionPoolProtocol):
     """
     Async TCP connection pool.
 
@@ -66,6 +67,7 @@ class ConnectionPool:
         # Fast path: grab an idle connection without any lock
         q = self._queue(address)
         reader, writer = None, None
+        reused = False
         while not q.empty():
             try:
                 r, w = q.get_nowait()
@@ -73,6 +75,7 @@ class ConnectionPool:
                 break
             if not w.is_closing():
                 reader, writer = r, w
+                reused = True
                 break
             # stale connection – discard and try next
         if writer is None:
@@ -83,6 +86,7 @@ class ConnectionPool:
                 return None
         try:
             await send_message(writer, msg)
+            assert reader is not None
             response = await asyncio.wait_for(recv_message(reader), timeout=5.0)
             # Return to pool (no lock needed – put_nowait is thread-safe in asyncio)
             if not writer.is_closing():
@@ -94,7 +98,40 @@ class ConnectionPool:
         except Exception as e:
             logger.debug("Connection to %s failed: %s", address, e)
             writer.close()
-            return None
+            if not reused:
+                return None
+            # Pooled connection was stale (peer restarted) — retry once fresh
+            try:
+                reader, writer = await self._new_connection(host, port)
+            except Exception as e2:
+                logger.debug("Cannot connect to %s: %s", address, e2)
+                return None
+            try:
+                await send_message(writer, msg)
+                response = await asyncio.wait_for(recv_message(reader), timeout=5.0)
+                if not writer.is_closing():
+                    try:
+                        q.put_nowait((reader, writer))
+                    except asyncio.QueueFull:
+                        writer.close()
+                return response
+            except Exception as e2:
+                logger.debug("Retry to %s failed: %s", address, e2)
+                writer.close()
+                return None
+
+    async def close_peer(self, host: str, port: int) -> None:
+        """Drain and close all pooled connections for one peer."""
+        address = f"{host}:{port}"
+        q = self._queues.pop(address, None)
+        if q is None:
+            return
+        while not q.empty():
+            try:
+                _, writer = q.get_nowait()
+                writer.close()
+            except asyncio.QueueEmpty:
+                break
 
     async def close_all(self) -> None:
         for q in self._queues.values():

@@ -1,8 +1,7 @@
 from .discovery import DNSDiscovery, Discovery, GossipDiscovery, StaticDiscovery
-from .node import StorageNode
+from .node import StorageNode, AsyncStorageNode
 from .ring import RendezvousRing
 from .store import LocalStore
-from .sync_node import SyncStorageNode
 from .types import Message, MessageType, NodeInfo
 
 __all__ = [
@@ -11,7 +10,7 @@ __all__ = [
     "GossipDiscovery",
     "StaticDiscovery",
     "StorageNode",
-    "SyncStorageNode",
+    "AsyncStorageNode",
     "RendezvousRing",
     "LocalStore",
     "Message",

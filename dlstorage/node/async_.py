@@ -1,5 +1,5 @@
 """
-StorageNode – the core of dlstorage.
+AsyncStorageNode – the core of dlstorage.
 
 Each node:
   - Runs a TCP server (asyncio) that speaks the dlstorage wire protocol.
@@ -10,7 +10,7 @@ Each node:
 
 Usage (context-manager style)::
 
-    async with StorageNode("127.0.0.1", 7001, StaticDiscovery([...])) as node:
+    async with AsyncStorageNode("127.0.0.1", 7001, StaticDiscovery([...])) as node:
         await node.set("key", {"any": "value"})
         val = await node.get("key")
         await node.delete("key")
@@ -23,11 +23,20 @@ import logging
 import random
 from typing import Any
 
-from .discovery import Discovery, GossipDiscovery
-from .pool import ConnectionPool, recv_message, send_message
-from .ring import RendezvousRing
-from .store import LocalStore
-from .types import Message, MessageType, NodeInfo
+from dlstorage.connection_pool.interface import ConnectionPool
+from dlstorage.discovery import Discovery, GossipDiscovery
+from dlstorage.connection_pool.async_ import (
+    recv_message,
+    send_message,
+    AsyncConnectionPool,
+)
+from dlstorage.connection_pool.interface import (
+    AsyncConnectionPool as AsyncConnectionPoolT,
+)
+from dlstorage.ring import RendezvousRing
+from dlstorage.ring.interface import Ring
+from dlstorage.store import LocalStore
+from dlstorage.types import Message, MessageType, NodeInfo
 
 logger = logging.getLogger(__name__)
 
@@ -36,33 +45,38 @@ _GOSSIP_FANOUT = 3  # peers to gossip with per round
 _PURGE_INTERVAL = 30.0  # seconds between TTL-expiry sweeps
 
 
-class StorageNode:
+class AsyncStorageNode:
     """
     A single node in the distributed storage cluster.
 
     Args:
-        host:        Bind address for the TCP server.
-        port:        Bind port for the TCP server.
         discovery:   A Discovery backend (Static / DNS / Gossip).
-        replication: How many ring nodes each key is written to (default 1).
-        max_conns:   Max idle connections per peer in the pool (default 5).
+        host:        Bind address for the TCP server (default "0.0.0.0").
+        port:        Bind port for the TCP server (default 7001).
+        ring:        Ring implementation for key routing (default Rendezvous).
+        connection_pool: ConnectionPool implementation for outbound connections (default AsyncConnectionPool).
+        replication: How many ring nodes each key is written to (default 3).
+        backlog:     TCP listen backlog (default 256).
     """
 
     def __init__(
         self,
-        host: str,
-        port: int,
         discovery: Discovery,
+        host: str = "0.0.0.0",
+        port: int = 7001,
         *,
-        replication: int = 1,
-        max_conns: int = 5,
+        ring: Ring = RendezvousRing(),
+        connection_pool: AsyncConnectionPoolT = AsyncConnectionPool(max_per_peer=64),
+        replication: int = 3,
+        backlog: int = 256,
     ) -> None:
         self.info = NodeInfo(host, port)
         self.discovery = discovery
         self._store = LocalStore()
-        self._ring = RendezvousRing()
-        self._pool = ConnectionPool(max_per_peer=max_conns)
+        self._ring = ring
+        self._pool = connection_pool
         self._replication = replication
+        self._backlog = backlog
         self._server: asyncio.Server | None = None
         self._tasks: list[asyncio.Task] = []
         self._handler_tasks: set[asyncio.Task] = set()
@@ -75,13 +89,16 @@ class StorageNode:
         self._ring.add(self.info)
 
         self._server = await asyncio.start_server(
-            self._handle_client, self.info.host, self.info.port
+            self._handle_client,
+            self.info.host,
+            self.info.port,
+            backlog=self._backlog,
         )
         self._tasks = [
             asyncio.create_task(self._gossip_loop(), name="gossip"),
             asyncio.create_task(self._purge_loop(), name="purge"),
         ]
-        logger.info("StorageNode started at %s", self.info.address)
+        logger.info("AsyncStorageNode started at %s", self.info.address)
         await self._announce_join()
 
     async def stop(self) -> None:
@@ -99,9 +116,9 @@ class StorageNode:
             self._server.close()
             await self._server.wait_closed()
         await self._pool.close_all()
-        logger.info("StorageNode stopped at %s", self.info.address)
+        logger.info("AsyncStorageNode stopped at %s", self.info.address)
 
-    async def __aenter__(self) -> "StorageNode":
+    async def __aenter__(self) -> "AsyncStorageNode":
         await self.start()
         return self
 
@@ -114,20 +131,27 @@ class StorageNode:
         """
         Retrieve a value by key.
 
-        Routes to the node with the highest HRW score for *key*.
-        Returns ``None`` if the key is absent or expired.
+        Tries the same replica set that set() wrote to (top-*replication*
+        nodes by HRW score).  Walking all replicas means the value is found
+        even when the ring changed after the write (peer left / rejoined).
+        Returns ``None`` if no replica holds the key.
         """
-        node = self._ring.get_node(key)
-        if node is None or node == self.info:
+        nodes = self._ring.get_nodes(key, n=self._replication)
+        if not nodes:
             return self._store.get(key)
-
-        resp = await self._pool.execute(
-            node.host,
-            node.port,
-            Message(MessageType.GET, {"key": key}),
-        )
-        if resp and resp.type == MessageType.OK:
-            return resp.payload.get("value")
+        for node in nodes:
+            if node == self.info:
+                value = self._store.get(key)
+                if value is not None:
+                    return value
+            else:
+                resp = await self._pool.execute(
+                    node.host,
+                    node.port,
+                    Message(MessageType.GET, {"key": key}),
+                )
+                if resp and resp.type == MessageType.OK:
+                    return resp.payload.get("value")
         return None
 
     async def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
@@ -299,6 +323,7 @@ class StorageNode:
         try:
             while True:
                 msg = await recv_message(reader)
+                assert msg
                 response = await self._dispatch(msg)
                 await send_message(writer, response)
         except asyncio.IncompleteReadError:
@@ -314,7 +339,7 @@ class StorageNode:
 
     async def _dispatch(self, msg: Message) -> Message:
         match msg.type:
-            # ---- membership -------------------------------------------- #
+            # Membership
             case MessageType.PING:
                 return Message(MessageType.PONG, {"node": self.info.to_dict()})
 
@@ -336,10 +361,11 @@ class StorageNode:
                 self._ring.remove(peer)
                 if isinstance(self.discovery, GossipDiscovery):
                     self.discovery.remove_peer(peer)
+                await self._pool.close_peer(peer.host, peer.port)
                 logger.debug("Peer left: %s", peer)
                 return Message(MessageType.OK, {})
 
-            # ---- store ------------------------------------------------- #
+            # Store
             case MessageType.GET:
                 key = msg.payload["key"]
                 value = self._store.get(key)
@@ -361,7 +387,6 @@ class StorageNode:
                     return Message(MessageType.OK, {"key": key})
                 return Message(MessageType.NOT_FOUND, {"key": key})
 
-            # ---- fallback ---------------------------------------------- #
             case _:
                 return Message(
                     MessageType.ERROR,

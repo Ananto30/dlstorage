@@ -46,6 +46,39 @@ class LocalStore:
             now = time.monotonic()
             return [k for k, (_, exp) in self._data.items() if exp is None or exp > now]
 
+    def scan(self, pattern: str) -> list[tuple[str, Any]]:
+        """Return (key, value) pairs for all non-expired keys containing *pattern*."""
+        with self._lock:
+            now = time.monotonic()
+            return [
+                (k, v)
+                for k, (v, exp) in self._data.items()
+                if pattern in k and (exp is None or exp > now)
+            ]
+
+    def scan_keys(self, pattern: str) -> list[str]:
+        """Return keys matching *pattern*."""
+        with self._lock:
+            now = time.monotonic()
+            return [
+                k
+                for k, (_, exp) in self._data.items()
+                if pattern in k and (exp is None or exp > now)
+            ]
+
+    def flush_all(self) -> None:
+        """Delete all keys."""
+        with self._lock:
+            self._data.clear()
+
+    def flush_keys(self, pattern: str) -> int:
+        """Delete keys matching *pattern*. Returns count deleted."""
+        with self._lock:
+            to_delete = [k for k in self._data if pattern in k]
+            for k in to_delete:
+                del self._data[k]
+            return len(to_delete)
+
     def clear(self) -> None:
         with self._lock:
             self._data.clear()

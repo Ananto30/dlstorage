@@ -1,5 +1,5 @@
 """
-SyncStorageNode – blocking/threaded counterpart to StorageNode.
+StorageNode – blocking/threaded counterpart to AsyncStorageNode.
 
 Each node:
   - Runs a TCP server on a background thread (one handler thread per connection).
@@ -24,54 +24,62 @@ import threading
 import time
 from typing import Any
 
-from .discovery import Discovery, GossipDiscovery
-from .ring import RendezvousRing
-from .store import LocalStore
-from .sync_pool import SyncConnectionPool, recv_message, send_message
-from .types import Message, MessageType, NodeInfo
+from dlstorage.connection_pool.interface import ConnectionPool
+from dlstorage.connection_pool.mux import MuxConnectionPool, recv_message, send_message
+from dlstorage.discovery import Discovery, GossipDiscovery
+from dlstorage.ring import RendezvousRing
+from dlstorage.ring import Ring
+from dlstorage.store import LocalStore
+from dlstorage.types import Message, MessageType, NodeInfo
+from .interface import StorageNode as SyncStorageNodeProto
 
 logger = logging.getLogger(__name__)
 
 _PURGE_INTERVAL = 30.0  # seconds between TTL-expiry sweeps
 
 
-class SyncStorageNode:
+class StorageNode(SyncStorageNodeProto):
     """
     Synchronous (blocking, thread-per-connection) storage node.
 
+    The outbound connection pool uses I/O multiplexing via
+    ``selectors.DefaultSelector`` (kqueue / epoll) so many concurrent
+    requests share a single selector thread instead of blocking per-thread.
+
     Args:
-        host:        Bind address for the TCP server.
-        port:        Bind port for the TCP server.
         discovery:   A Discovery backend (Static / DNS / Gossip).
-        replication: How many ring nodes each key is written to (default 1).
-        max_conns:   Max idle connections per peer in the pool (default 16).
+        host:        Bind address for the TCP server (default "0.0.0.0").
+        port:        Bind port for the TCP server (default 7001).
+        ring:        Ring implementation for key routing (default Rendezvous).
+        connection_pool: ConnectionPool implementation for peer connections
+                         (default MuxConnectionPool).
+        replication: How many ring nodes each key is written to (default 3).
         backlog:     TCP listen backlog (default 256).
     """
 
     def __init__(
         self,
-        host: str,
-        port: int,
         discovery: Discovery,
+        host: str = "0.0.0.0",
+        port: int = 7001,
         *,
-        replication: int = 1,
-        max_conns: int = 16,
+        ring: Ring = RendezvousRing(),
+        connection_pool: ConnectionPool = MuxConnectionPool(max_per_peer=64),
+        replication: int = 3,
         backlog: int = 256,
     ) -> None:
         self.info = NodeInfo(host, port)
         self.discovery = discovery
         self._store = LocalStore()
-        self._ring = RendezvousRing()
-        self._pool = SyncConnectionPool(max_per_peer=max_conns)
+        self._ring = ring
+        self._pool = connection_pool
         self._replication = replication
         self._backlog = backlog
         self._server_sock: socket.socket | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
-    # ----------------------------------------------------------------------- #
-    # Lifecycle                                                                #
-    # ----------------------------------------------------------------------- #
+    # Lifecycle
 
     def start(self) -> None:
         """Bootstrap peers, bind the TCP server, start background threads."""
@@ -82,7 +90,7 @@ class SyncStorageNode:
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_sock.bind((self.info.host, self.info.port))
         self._server_sock.listen(self._backlog)
-        self._server_sock.settimeout(0.5)  # allows the accept loop to check _stop
+        self._server_sock.settimeout(0.5)
 
         accept_thread = threading.Thread(
             target=self._accept_loop,
@@ -115,29 +123,37 @@ class SyncStorageNode:
         self._pool.close_all()
         logger.info("SyncStorageNode stopped at %s", self.info.address)
 
-    def __enter__(self) -> "SyncStorageNode":
+    def __enter__(self) -> "StorageNode":
         self.start()
         return self
 
     def __exit__(self, *_: Any) -> None:
         self.stop()
 
-    # ----------------------------------------------------------------------- #
-    # Public store API                                                         #
-    # ----------------------------------------------------------------------- #
+    # Public store API
 
     def get(self, key: str) -> Any:
-        """Return value for *key*, or ``None`` if absent/expired."""
-        node = self._ring.get_node(key)
-        if node is None or node == self.info:
+        """Return value for *key*, or ``None`` if absent/expired.
+
+        Tries the same replica set that set() wrote to so the value is found
+        even when the ring changed after the write (peer left / rejoined).
+        """
+        nodes = self._ring.get_nodes(key, n=self._replication)
+        if not nodes:
             return self._store.get(key)
-        resp = self._pool.execute(
-            node.host,
-            node.port,
-            Message(MessageType.GET, {"key": key}),
-        )
-        if resp and resp.type == MessageType.OK:
-            return resp.payload.get("value")
+        for node in nodes:
+            if node == self.info:
+                value = self._store.get(key)
+                if value is not None:
+                    return value
+            else:
+                resp = self._pool.execute(
+                    node.host,
+                    node.port,
+                    Message(MessageType.GET, {"key": key}),
+                )
+                if resp and resp.type == MessageType.OK:
+                    return resp.payload.get("value")
         return None
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
@@ -155,9 +171,7 @@ class SyncStorageNode:
             return self._store.delete(key)
         return any(self._delete_on(n, key) for n in nodes)
 
-    # ----------------------------------------------------------------------- #
-    # Internal: per-node store helpers                                         #
-    # ----------------------------------------------------------------------- #
+    # Internal: per-node store helpers
 
     def _set_on(self, node: NodeInfo, key: str, value: Any, ttl: float | None) -> bool:
         if node == self.info:
@@ -181,9 +195,7 @@ class SyncStorageNode:
         )
         return resp is not None and resp.type == MessageType.OK
 
-    # ----------------------------------------------------------------------- #
-    # Bootstrap                                                                #
-    # ----------------------------------------------------------------------- #
+    # Bootstrap
 
     def _bootstrap(self) -> None:
         if isinstance(self.discovery, GossipDiscovery):
@@ -208,9 +220,7 @@ class SyncStorageNode:
         self.discovery.add_peer(seed)
         self._ring.add(seed)
 
-    # ----------------------------------------------------------------------- #
-    # Peer announcements                                                       #
-    # ----------------------------------------------------------------------- #
+    # Peer announcements
 
     def _announce_join(self) -> None:
         self._broadcast(
@@ -225,11 +235,10 @@ class SyncStorageNode:
             if peer != self.info:
                 self._pool.execute(peer.host, peer.port, msg)
 
-    # ----------------------------------------------------------------------- #
-    # TCP server                                                               #
-    # ----------------------------------------------------------------------- #
+    # TCP server
 
     def _accept_loop(self) -> None:
+        assert self._server_sock
         while not self._stop.is_set():
             try:
                 client_sock, addr = self._server_sock.accept()
@@ -252,7 +261,7 @@ class SyncStorageNode:
                 response = self._dispatch(msg)
                 send_message(sock, response)
         except EOFError:
-            pass  # client closed connection
+            pass
         except Exception as exc:
             logger.debug("Client handler error (%s): %s", addr, exc)
         finally:
@@ -260,7 +269,6 @@ class SyncStorageNode:
 
     def _dispatch(self, msg: Message) -> Message:
         match msg.type:
-            # ---- membership -------------------------------------------- #
             case MessageType.PING:
                 return Message(MessageType.PONG, {"node": self.info.to_dict()})
 
@@ -281,9 +289,9 @@ class SyncStorageNode:
                 self._ring.remove(peer)
                 if isinstance(self.discovery, GossipDiscovery):
                     self.discovery.remove_peer(peer)
+                self._pool.close_peer(peer.host, peer.port)
                 return Message(MessageType.OK, {})
 
-            # ---- store ------------------------------------------------- #
             case MessageType.GET:
                 key = msg.payload["key"]
                 value = self._store.get(key)
@@ -311,19 +319,13 @@ class SyncStorageNode:
                     {"error": f"unknown message type: {msg.type}"},
                 )
 
-    # ----------------------------------------------------------------------- #
-    # Background: TTL purge                                                    #
-    # ----------------------------------------------------------------------- #
+    # Background: TTL purge
 
     def _purge_loop(self) -> None:
         while not self._stop.wait(timeout=_PURGE_INTERVAL):
             removed = self._store.purge_expired()
             if removed:
                 logger.debug("Purged %d expired keys", removed)
-
-    # ----------------------------------------------------------------------- #
-    # Repr                                                                     #
-    # ----------------------------------------------------------------------- #
 
     def __repr__(self) -> str:
         return (

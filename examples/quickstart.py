@@ -1,13 +1,13 @@
 """
 Quick-start demo: 3-node cluster using StaticDiscovery.
 
-Run with:  python main.py
+Run with:  python examples/quickstart.py
 """
 
 import asyncio
 import logging
 
-from dlstorage import StaticDiscovery, StorageNode
+from dlstorage import StaticDiscovery, AsyncStorageNode
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -16,10 +16,10 @@ async def main() -> None:
     addrs = ["127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"]
 
     nodes = [
-        StorageNode(
+        AsyncStorageNode(
+            StaticDiscovery([a for a in addrs if a != addr]),
             "127.0.0.1",
             int(addr.split(":")[1]),
-            StaticDiscovery([a for a in addrs if a != addr]),
             replication=2,
         )
         for addr in addrs

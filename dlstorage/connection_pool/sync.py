@@ -15,16 +15,12 @@ import pickle
 import queue
 import socket
 
-from .types import Message
+from dlstorage.types import Message
+from .interface import ConnectionPool as ConnectionPoolProtocol
 
 logger = logging.getLogger(__name__)
 
 HEADER_SIZE = 4  # must match pool.py
-
-
-# --------------------------------------------------------------------------- #
-# Wire helpers                                                                 #
-# --------------------------------------------------------------------------- #
 
 
 def _recvexactly(sock: socket.socket, n: int) -> bytes:
@@ -52,12 +48,7 @@ def recv_message(sock: socket.socket) -> Message:
     return pickle.loads(data)  # noqa: S301 – trusted internal network only
 
 
-# --------------------------------------------------------------------------- #
-# Connection pool                                                              #
-# --------------------------------------------------------------------------- #
-
-
-class SyncConnectionPool:
+class ConnectionPool(ConnectionPoolProtocol):
     """
     Thread-safe TCP connection pool backed by ``queue.LifoQueue``.
 
@@ -99,9 +90,11 @@ class SyncConnectionPool:
 
         # Fast path: grab idle connection
         sock = None
+        reused = False
         while True:
             try:
                 sock = q.get_nowait()
+                reused = True
                 break
             except queue.Empty:
                 break
@@ -129,7 +122,41 @@ class SyncConnectionPool:
                 sock.close()
             except Exception:
                 pass
-            return None
+            if not reused:
+                return None
+            # Pooled connection was stale (peer restarted) — retry once fresh
+            try:
+                sock = self._new_connection(host, port)
+            except Exception as exc2:
+                logger.debug("Cannot connect to %s: %s", address, exc2)
+                return None
+            try:
+                send_message(sock, msg)
+                response = recv_message(sock)
+                try:
+                    q.put_nowait(sock)
+                except queue.Full:
+                    sock.close()
+                return response
+            except Exception as exc2:
+                logger.debug("Retry to %s failed: %s", address, exc2)
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return None
+
+    def close_peer(self, host: str, port: int) -> None:
+        """Drain and close all pooled connections for one peer."""
+        address = f"{host}:{port}"
+        q = self._queues.pop(address, None)
+        if q is None:
+            return
+        while True:
+            try:
+                q.get_nowait().close()
+            except (queue.Empty, OSError):
+                break
 
     def close_all(self) -> None:
         for q in self._queues.values():
