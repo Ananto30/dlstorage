@@ -23,7 +23,7 @@ from dlstorage.consistency.fhw import AsyncFHW
 from dlstorage.types import Message, MessageType
 
 ADDRS = ["127.0.0.1:7101", "127.0.0.1:7102", "127.0.0.1:7103"]
-REPLICATION = 3
+REPLICATION = 2
 
 
 async def _node_loop(

@@ -142,7 +142,7 @@ class StorageNode(SyncStorageNodeProto):
         ring: Ring = RendezvousRing(),
         connection_pool: ConnectionPool = MuxConnectionPool(max_per_peer=64),
         merge_resolver: MergeResolver = LWW(),
-        replication: int = 3,
+        replication: int = 2,
         backlog: int = 256,
     ) -> None:
         self.info = NodeInfo(host, port)

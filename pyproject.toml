@@ -21,3 +21,6 @@ dev = [
     "snakeviz>=2.2.2",
     "uvicorn>=0.48.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["dlstorage*"]
