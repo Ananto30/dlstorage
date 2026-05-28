@@ -110,3 +110,5 @@ async def get_product(product_id: str):
 DLStorage can be easily deployed in Kubernetes and use DNS-based discovery to find other nodes in the cluster. You don't need to worry about service discovery or load balancing, as the nodes will automatically find each other using DNS SRV records.
 
 Example is already provided in the previous section.
+
+<img width="1346" height="1234" alt="image" src="https://github.com/user-attachments/assets/ca93d730-5a80-4e2d-9401-7c1faf3d08b0" />
