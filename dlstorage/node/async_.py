@@ -259,7 +259,7 @@ class AsyncStorageNode:
     # Bootstrap
 
     async def _bootstrap(self) -> None:
-        await self._gossip.sync_peers()
+        # await self._gossip.sync_peers()
         for peer in self.discovery.get_peers():
             self._ring.add(peer)
 

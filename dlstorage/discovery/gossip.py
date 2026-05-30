@@ -20,7 +20,7 @@ class GossipDiscovery(Discovery):
         self._peers: set[NodeInfo] = set()
 
     def get_peers(self) -> list[NodeInfo]:
-        return list(self._peers)
+        return list(self._peers) + [self.seed]
 
     def add_peer(self, peer: NodeInfo) -> bool:
         """Add a peer. Returns True if it was new."""

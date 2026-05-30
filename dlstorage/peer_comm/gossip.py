@@ -50,62 +50,41 @@ class Gossip:
     def dispatch(self, msg: Message) -> Message:
         return handle_message(self, msg)
 
-    def sync_peers(self) -> None:
-        if not isinstance(self._discovery, GossipDiscovery):
-            return  # Only gossip discovery needs peer syncing
-
-        seed = self._discovery.seed
-        resp = self._pool.execute(
-            seed.host,
-            seed.port,
-            Message(MessageType.PEER_LIST, {"requester": self.info.to_dict()}),
-        )
-        if resp and resp.type == MessageType.PEER_LIST:
-            for raw in resp.payload.get("peers", []):
-                peer = NodeInfo.from_dict(raw)
-                self._discovery.add_peer(peer)
-                self._ring.add(peer)
-        self._discovery.add_peer(seed)
-        self._ring.add(seed)
-
     def gossip_loop(self) -> None:
         """Periodically exchange peer lists and evict unresponsive nodes."""
         while True:
             try:
-                time.sleep(_GOSSIP_INTERVAL)
-                peers = [n for n in self._ring.nodes() if n != self.info]
-                if not peers:
-                    continue
-                sample = random.sample(peers, min(_GOSSIP_FANOUT, len(peers)))
-                for peer in sample:
-                    try:
-                        resp = self._pool.execute(
-                            peer.host,
-                            peer.port,
-                            Message(
-                                MessageType.PEER_LIST,
-                                {"requester": self.info.to_dict()},
-                            ),
-                        )
-                        if resp is None:
-                            self._evict(peer)
-                            continue
-                        if resp.type == MessageType.PEER_LIST:
-                            known = set(self._ring.nodes())
-                            for raw in resp.payload.get("peers", []):
-                                new_peer = NodeInfo.from_dict(raw)
-                                if new_peer != self.info and new_peer not in known:
-                                    self._ring.add(new_peer)
-                                    if isinstance(self._discovery, GossipDiscovery):
-                                        self._discovery.add_peer(new_peer)
-                                    logger.debug(
-                                        "Discovered new peer via gossip: %s", new_peer
-                                    )
-                    except Exception as exc:
-                        logger.debug("Gossip error with %s: %s", peer, exc)
-                        self._evict(peer)
+                peers = [n for n in self._discovery.get_peers() if n != self.info]
+                if peers:
+                    sample = random.sample(peers, min(_GOSSIP_FANOUT, len(peers)))
+                    for peer in sample:
+                        self._gossip_with(peer)
             except Exception as exc:
                 logger.debug("Gossip round error: %s", exc)
+            time.sleep(_GOSSIP_INTERVAL)
+
+    def _gossip_with(self, peer: NodeInfo) -> None:
+        try:
+            resp = self._pool.execute(
+                peer.host,
+                peer.port,
+                Message(MessageType.PEER_LIST, {"requester": self.info.to_dict()}),
+            )
+            if resp is None:
+                self._evict(peer)
+                return
+            if resp.type == MessageType.PEER_LIST:
+                known = set(self._ring.nodes())
+                for raw in resp.payload.get("peers", []):
+                    new_peer = NodeInfo.from_dict(raw)
+                    if new_peer != self.info and new_peer not in known:
+                        self._ring.add(new_peer)
+                        if isinstance(self._discovery, GossipDiscovery):
+                            self._discovery.add_peer(new_peer)
+                        logger.debug("Discovered new peer via gossip: %s", new_peer)
+        except Exception as exc:
+            logger.debug("Gossip error with %s: %s", peer, exc)
+            self._evict(peer)
 
     def _evict(self, peer: NodeInfo) -> None:
         logger.debug("Peer unresponsive, evicting: %s", peer)
@@ -145,23 +124,6 @@ class AsyncGossip:
             Message(MessageType.PEER_LEAVE, {"peer": self.info.to_dict()})
         )
 
-    async def sync_peers(self) -> None:
-        if not isinstance(self._discovery, GossipDiscovery):
-            return
-        seed = self._discovery.seed
-        resp = await self._pool.execute(
-            seed.host,
-            seed.port,
-            Message(MessageType.PEER_LIST, {"requester": self.info.to_dict()}),
-        )
-        if resp and resp.type == MessageType.PEER_LIST:
-            for raw in resp.payload.get("peers", []):
-                peer = NodeInfo.from_dict(raw)
-                self._discovery.add_peer(peer)
-                self._ring.add(peer)
-        self._discovery.add_peer(seed)
-        self._ring.add(seed)
-
     def dispatch(self, msg: Message) -> Message:
         return handle_message(self, msg)
 
@@ -169,19 +131,18 @@ class AsyncGossip:
         """Periodically exchange peer lists and evict unresponsive nodes."""
         while True:
             try:
-                await asyncio.sleep(_GOSSIP_INTERVAL)
-                peers = [n for n in self._ring.nodes() if n != self.info]
-                if not peers:
-                    continue
-                sample = random.sample(peers, min(_GOSSIP_FANOUT, len(peers)))
-                await asyncio.gather(
-                    *[self._gossip_with(p) for p in sample],
-                    return_exceptions=True,
-                )
+                peers = [n for n in self._discovery.get_peers() if n != self.info]
+                if peers:
+                    sample = random.sample(peers, min(_GOSSIP_FANOUT, len(peers)))
+                    await asyncio.gather(
+                        *[self._gossip_with(p) for p in sample],
+                        return_exceptions=True,
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.debug("Gossip round error: %s", exc)
+            await asyncio.sleep(_GOSSIP_INTERVAL)
 
     async def _gossip_with(self, peer: NodeInfo) -> None:
         try:

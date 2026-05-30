@@ -255,7 +255,6 @@ class StorageNode(SyncStorageNodeProto):
     # Bootstrap
 
     def _bootstrap(self) -> None:
-        self._gossip.sync_peers()
         for peer in self.discovery.get_peers():
             self._ring.add(peer)
 

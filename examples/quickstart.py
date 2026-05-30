@@ -50,6 +50,7 @@ async def main() -> None:
 
     # Read the same key from a different node (routed automatically)
     print("get data node2:", await nodes[1].get("data"))
+    print("get data node3:", await nodes[2].get("data"))
 
     await primary.delete("greeting")
     print("after delete  :", await primary.get("greeting"))  # None
