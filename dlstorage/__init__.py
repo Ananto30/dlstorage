@@ -1,5 +1,11 @@
 from .consistency import FHW, LWW, MergeResolver
-from .discovery import Discovery, DNSDiscovery, GossipDiscovery, StaticDiscovery
+from .discovery import (
+    ARecordDiscovery,
+    Discovery,
+    DNSDiscovery,
+    GossipDiscovery,
+    StaticDiscovery,
+)
 from .node.async_ import AsyncStorageNode
 from .node.sync import StorageNode
 from .ring import RendezvousRing
@@ -11,6 +17,7 @@ __all__ = [
     "FHW",
     "LWW",
     "Discovery",
+    "ARecordDiscovery",
     "DNSDiscovery",
     "GossipDiscovery",
     "StaticDiscovery",

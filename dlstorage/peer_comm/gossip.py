@@ -138,6 +138,7 @@ class AsyncGossip:
                         *[self._gossip_with(p) for p in sample],
                         return_exceptions=True,
                     )
+                logger.debug("Gossip round complete with peers: %s", peers)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

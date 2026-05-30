@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 from typing import Any
 
@@ -134,13 +135,20 @@ class AsyncStorageNode:
         host: str = "0.0.0.0",
         port: int = 7001,
         *,
+        advertise_host: str | None = None,
         ring: Ring = RendezvousRing(),
         connection_pool: AsyncConnectionPoolT = AsyncConnectionPool(max_per_peer=64),
         merge_resolver: AsyncMergeResolver = AsyncLWW(),
         replication: int = 2,
         backlog: int = 256,
     ) -> None:
-        self.info = NodeInfo(host, port)
+        # bind_host is the address the TCP server listens on (e.g. 0.0.0.0).
+        # self.info uses advertise_host so peers can reach this node by its
+        # actual IP/hostname rather than the wildcard bind address.
+        self._bind_host = host
+        advertise_host = advertise_host or socket.gethostbyname(socket.gethostname())
+        self.info = NodeInfo(advertise_host, port)
+
         self.discovery = discovery
         self._store = LocalLWWStore()
         self._ring = ring
@@ -162,7 +170,7 @@ class AsyncStorageNode:
 
         self._server = await asyncio.start_server(
             self._handle_client,
-            self.info.host,
+            self._bind_host,
             self.info.port,
             backlog=self._backlog,
         )
@@ -204,6 +212,9 @@ class AsyncStorageNode:
         candidates = self._ring.get_nodes(key, n=self._replication)
         if not candidates:
             return self._store.get(key)
+
+        logger.debug("Getting key %r from nodes %s", key, candidates)
+
         return await self._merge_resolver.read_resolve(
             key, self._make_handles(candidates)
         )
@@ -224,12 +235,16 @@ class AsyncStorageNode:
         ts = time.time_ns()
         if not nodes:
             self._store.set(key, value, ttl, ts=ts)
+            logger.debug("Set key %r locally (%s)", key, self.info.address)
             return True
+
         handles = self._make_handles(nodes)
         results = await asyncio.gather(
             *[h.set(key, value, ttl, ts) for h in handles],
             return_exceptions=True,
         )
+
+        logger.debug("Key %r set in nodes %s with results: %s", key, nodes, results)
         return any(r is True for r in results)
 
     async def delete(self, key: str) -> bool:
@@ -237,12 +252,17 @@ class AsyncStorageNode:
         nodes = self._ring.get_nodes(key, n=self._replication)
         ts = time.time_ns()
         if not nodes:
-            return self._store.delete(key, ts=ts)
+            self._store.delete(key, ts=ts)
+            logger.debug("Deleted key %r locally (%s)", key, self.info.address)
+            return True
+
         handles = self._make_handles(nodes)
         results = await asyncio.gather(
             *[h.delete(key, ts) for h in handles],
             return_exceptions=True,
         )
+
+        logger.debug("Key %r delete in nodes %s with results: %s", key, nodes, results)
         return any(r is True for r in results)
 
     def _make_handles(self, nodes: list[NodeInfo]) -> list[AsyncReplicaHandle]:
@@ -259,7 +279,6 @@ class AsyncStorageNode:
     # Bootstrap
 
     async def _bootstrap(self) -> None:
-        # await self._gossip.sync_peers()
         for peer in self.discovery.get_peers():
             self._ring.add(peer)
 

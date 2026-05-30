@@ -139,13 +139,20 @@ class StorageNode(SyncStorageNodeProto):
         host: str = "0.0.0.0",
         port: int = 7001,
         *,
+        advertise_host: str | None = None,
         ring: Ring = RendezvousRing(),
         connection_pool: ConnectionPool = MuxConnectionPool(max_per_peer=64),
         merge_resolver: MergeResolver = LWW(),
         replication: int = 2,
         backlog: int = 256,
     ) -> None:
-        self.info = NodeInfo(host, port)
+        # bind_host is the address the TCP server listens on (e.g. 0.0.0.0).
+        # self.info uses advertise_host so peers can reach this node by its
+        # actual IP/hostname rather than the wildcard bind address.
+        self._bind_host = host
+        advertise_host = advertise_host or socket.gethostbyname(socket.gethostname())
+        self.info = NodeInfo(advertise_host, port)
+
         self.discovery = discovery
         self._store = LocalLWWStore()
         self._ring = ring
@@ -167,7 +174,7 @@ class StorageNode(SyncStorageNodeProto):
 
         self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_sock.bind((self.info.host, self.info.port))
+        self._server_sock.bind((self._bind_host, self.info.port))
         self._server_sock.listen(self._backlog)
         self._server_sock.settimeout(0.5)
 
@@ -222,6 +229,9 @@ class StorageNode(SyncStorageNodeProto):
         candidates = self._ring.get_nodes(key, n=self._replication)
         if not candidates:
             return self._store.get(key)
+
+        logger.debug("Getting key %r from nodes %s", key, candidates)
+
         return self._merge_resolver.read_resolve(key, self._make_handles(candidates))
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
@@ -230,16 +240,25 @@ class StorageNode(SyncStorageNodeProto):
         ts = time.time_ns()
         if not nodes:
             self._store.set(key, value, ttl, ts=ts)
+            logger.debug("Set key %r locally (%s)", key, self.info.address)
             return True
-        return any(h.set(key, value, ttl, ts) for h in self._make_handles(nodes))
+
+        results = [h.set(key, value, ttl, ts) for h in self._make_handles(nodes)]
+        logger.debug("Key %r set in nodes %s with results: %s", key, nodes, results)
+        return any(results)
 
     def delete(self, key: str) -> bool:
         """Delete *key* from the top-*replication* ring nodes."""
         nodes = self._ring.get_nodes(key, n=self._replication)
         ts = time.time_ns()
         if not nodes:
-            return self._store.delete(key, ts=ts)
-        return any(h.delete(key, ts) for h in self._make_handles(nodes))
+            self._store.delete(key, ts=ts)
+            logger.debug("Deleted key %r locally (%s)", key, self.info.address)
+            return True
+
+        results = [h.delete(key, ts) for h in self._make_handles(nodes)]
+        logger.debug("Key %r delete in nodes %s with results: %s", key, nodes, results)
+        return any(results)
 
     def _make_handles(self, nodes: list[NodeInfo]) -> list[ReplicaHandle]:
         """Build ReplicaHandle instances for the given ring nodes."""
