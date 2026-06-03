@@ -28,7 +28,11 @@ from dlstorage.connection_pool.async_ import AsyncConnectionPool
 from dlstorage.connection_pool.interface import (
     AsyncConnectionPool as AsyncConnectionPoolT,
 )
-from dlstorage.connection_pool.wire import recv_message_async, send_message_async
+from dlstorage.connection_pool.wire import (
+    encode_message,
+    recv_message_async,
+    send_message_async,
+)
 from dlstorage.consistency.interface import AsyncMergeResolver
 from dlstorage.consistency.lww import AsyncLWW
 from dlstorage.discovery import Discovery
@@ -238,14 +242,25 @@ class AsyncStorageNode:
             logger.debug("Set key %r locally (%s)", key, self.info.address)
             return True
 
-        handles = self._make_handles(nodes)
-        results = await asyncio.gather(
-            *[h.set(key, value, ttl, ts) for h in handles],
-            return_exceptions=True,
-        )
+        # Encode the SET message once and fan out raw bytes to remote peers.
+        payload: dict[str, Any] = {"key": key, "value": value, "ts": ts}
+        if ttl is not None:
+            payload["ttl"] = ttl
+        encoded = encode_message(Message(MessageType.SET, payload))
+
+        coros: list = []
+        for n in nodes:
+            if n == self.info:
+                coros.append(self._store_set_async(key, value, ttl, ts))
+            else:
+                coros.append(self._pool.execute_raw(n.host, n.port, encoded))  # type: ignore[attr-defined]
+        results = await asyncio.gather(*coros, return_exceptions=True)
 
         logger.debug("Key %r set in nodes %s with results: %s", key, nodes, results)
-        return any(r is True for r in results)
+        return any(
+            r is True or (isinstance(r, Message) and r.type == MessageType.OK)
+            for r in results
+        )
 
     async def delete(self, key: str) -> bool:
         """Delete a key from the cluster via the consistency policy."""
@@ -256,14 +271,30 @@ class AsyncStorageNode:
             logger.debug("Deleted key %r locally (%s)", key, self.info.address)
             return True
 
-        handles = self._make_handles(nodes)
-        results = await asyncio.gather(
-            *[h.delete(key, ts) for h in handles],
-            return_exceptions=True,
-        )
+        # Encode the DELETE message once and fan out raw bytes to remote peers.
+        encoded = encode_message(Message(MessageType.DELETE, {"key": key, "ts": ts}))
+
+        coros: list = []
+        for n in nodes:
+            if n == self.info:
+                coros.append(self._store_delete_async(key, ts))
+            else:
+                coros.append(self._pool.execute_raw(n.host, n.port, encoded))  # type: ignore[attr-defined]
+        results = await asyncio.gather(*coros, return_exceptions=True)
 
         logger.debug("Key %r delete in nodes %s with results: %s", key, nodes, results)
-        return any(r is True for r in results)
+        return any(
+            r is True or (isinstance(r, Message) and r.type == MessageType.OK)
+            for r in results
+        )
+
+    async def _store_set_async(
+        self, key: str, value: Any, ttl: float | None, ts: int
+    ) -> bool:
+        return self._store.set(key, value, ttl, ts=ts)
+
+    async def _store_delete_async(self, key: str, ts: int) -> bool:
+        return self._store.delete(key, ts=ts)
 
     def _make_handles(self, nodes: list[NodeInfo]) -> list[AsyncReplicaHandle]:
         """Build ReplicaHandle instances for the given ring nodes."""

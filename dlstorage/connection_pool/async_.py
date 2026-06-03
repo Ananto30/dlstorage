@@ -103,6 +103,68 @@ class AsyncConnectionPool(AsyncConnectionPoolProtocol):
                 writer.close()
                 return None
 
+    async def execute_raw(self, host: str, port: int, encoded: bytes) -> Message | None:
+        """Send pre-encoded msgpack bytes and return the response.
+
+        Identical flow to ``execute`` but skips re-serialising the message,
+        allowing callers to encode once and fan out to N peers.
+        """
+        address = f"{host}:{port}"
+        q = self._queue(address)
+        reader, writer = None, None
+        reused = False
+        while not q.empty():
+            try:
+                r, w = q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not w.is_closing():
+                reader, writer = r, w
+                reused = True
+                break
+        if writer is None:
+            try:
+                reader, writer = await self._new_connection(host, port)
+            except Exception as e:
+                logger.debug("Cannot connect to %s: %s", address, e)
+                return None
+        header = len(encoded).to_bytes(4, "big")
+        try:
+            writer.write(header + encoded)
+            assert reader is not None
+            response = await asyncio.wait_for(recv_message_async(reader), timeout=5.0)
+            if not writer.is_closing():
+                try:
+                    q.put_nowait((reader, writer))
+                except asyncio.QueueFull:
+                    writer.close()
+            return response
+        except Exception as e:
+            logger.debug("Connection to %s failed (raw): %s", address, e)
+            writer.close()
+            if not reused:
+                return None
+            try:
+                reader, writer = await self._new_connection(host, port)
+            except Exception as e2:
+                logger.debug("Cannot connect to %s: %s", address, e2)
+                return None
+            try:
+                writer.write(header + encoded)
+                response = await asyncio.wait_for(
+                    recv_message_async(reader), timeout=5.0
+                )
+                if not writer.is_closing():
+                    try:
+                        q.put_nowait((reader, writer))
+                    except asyncio.QueueFull:
+                        writer.close()
+                return response
+            except Exception as e3:
+                logger.debug("Retry to %s failed (raw): %s", address, e3)
+                writer.close()
+                return None
+
     def close_peer(self, host: str, port: int) -> None:
         """Drain and close all pooled connections for one peer."""
         address = f"{host}:{port}"

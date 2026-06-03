@@ -5,6 +5,7 @@ description = "Distributed local storage system for Python objects"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "msgspec>=0.21.1",
     "uvloop>=0.22.1",
 ]
 
