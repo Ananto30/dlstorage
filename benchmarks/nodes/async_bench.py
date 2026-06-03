@@ -39,6 +39,7 @@ async def _node_loop(
         StaticDiscovery(all_addrs),
         host,
         port,
+        advertise_host=host,  # keep loopback address in the ring
         replication=REPLICATION,
         # merge_resolver=AsyncFHW(),
     )

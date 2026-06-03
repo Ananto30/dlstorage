@@ -14,7 +14,7 @@ from dlstorage.node.interface import AsyncReplicaHandle, ReplicaHandle
 
 from .interface import AsyncMergeResolver, MergeResolver
 
-_thread_pool = ThreadPoolExecutor(max_workers=4)
+_thread_pool = ThreadPoolExecutor(max_workers=32)
 
 
 class LWW(MergeResolver):
@@ -28,21 +28,13 @@ class LWW(MergeResolver):
     """
 
     def read_resolve(self, key: str, replica_handles: list[ReplicaHandle]) -> Any:
-        # Threadpool doesnt help much here
-        # def fetch(h: ReplicaHandle):
-        #     try:
-        #         return h.get_versioned(key)
-        #     except Exception:
-        #         return None
-        # results = list(_thread_pool.map(fetch, replica_handles))
-
-        results = []
-        for h in replica_handles:
+        def fetch(h: ReplicaHandle):
             try:
-                r = h.get_versioned(key)
+                return h.get_versioned(key)
             except Exception:
-                r = None
-            results.append(r)
+                return None
+
+        results = list(_thread_pool.map(fetch, replica_handles))
 
         best_value, best_ts, best_tombstone = None, -1, False
         for r in results:

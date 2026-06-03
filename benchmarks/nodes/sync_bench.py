@@ -23,7 +23,7 @@ from dlstorage.connection_pool.sync import ConnectionPool
 from dlstorage.types import Message, MessageType
 
 ADDRS = ["127.0.0.1:7201", "127.0.0.1:7202", "127.0.0.1:7203"]
-REPLICATION = 3
+REPLICATION = 2
 
 
 def _node_process(
@@ -38,8 +38,8 @@ def _node_process(
         StaticDiscovery(all_addrs),
         host,
         int(port_s),
+        advertise_host=host,  # keep loopback address in the ring
         replication=REPLICATION,
-        # connection_pool=ConnectionPool(max_per_peer=64),
     )
     node.start()
     time.sleep(0.1)

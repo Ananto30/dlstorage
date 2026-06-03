@@ -22,10 +22,11 @@ import logging
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from dlstorage.connection_pool.interface import ConnectionPool
-from dlstorage.connection_pool.mux import MuxConnectionPool
+from dlstorage.connection_pool.sync import ConnectionPool as SimpleConnectionPool
 from dlstorage.connection_pool.wire import recv_message, send_message
 from dlstorage.consistency.interface import MergeResolver
 from dlstorage.consistency.lww import LWW
@@ -141,7 +142,7 @@ class StorageNode(SyncStorageNodeProto):
         *,
         advertise_host: str | None = None,
         ring: Ring = RendezvousRing(),
-        connection_pool: ConnectionPool = MuxConnectionPool(max_per_peer=64),
+        connection_pool: ConnectionPool = SimpleConnectionPool(max_per_peer=64),
         merge_resolver: MergeResolver = LWW(),
         replication: int = 2,
         backlog: int = 256,
@@ -164,6 +165,10 @@ class StorageNode(SyncStorageNodeProto):
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._gossip = Gossip(self.info, self._ring, self._pool, self.discovery)
+        # Fan-out executor: sends to all replicas in parallel (like Redis pipeline)
+        self._fanout = ThreadPoolExecutor(
+            max_workers=64, thread_name_prefix="dlstorage-fanout"
+        )
 
     # Lifecycle
 
@@ -205,6 +210,7 @@ class StorageNode(SyncStorageNodeProto):
         """Announce departure, stop the server and background threads."""
         self._gossip.announce_leave()
         self._stop.set()
+        self._fanout.shutdown(wait=False)
         if self._server_sock:
             try:
                 self._server_sock.close()
@@ -243,7 +249,9 @@ class StorageNode(SyncStorageNodeProto):
             logger.debug("Set key %r locally (%s)", key, self.info.address)
             return True
 
-        results = [h.set(key, value, ttl, ts) for h in self._make_handles(nodes)]
+        handles = self._make_handles(nodes)
+        futs = [self._fanout.submit(h.set, key, value, ttl, ts) for h in handles]
+        results = [f.result() for f in as_completed(futs, timeout=5.0)]
         logger.debug("Key %r set in nodes %s with results: %s", key, nodes, results)
         return any(results)
 
@@ -256,7 +264,9 @@ class StorageNode(SyncStorageNodeProto):
             logger.debug("Deleted key %r locally (%s)", key, self.info.address)
             return True
 
-        results = [h.delete(key, ts) for h in self._make_handles(nodes)]
+        handles = self._make_handles(nodes)
+        futs = [self._fanout.submit(h.delete, key, ts) for h in handles]
+        results = [f.result() for f in as_completed(futs, timeout=5.0)]
         logger.debug("Key %r delete in nodes %s with results: %s", key, nodes, results)
         return any(results)
 
@@ -309,7 +319,7 @@ class StorageNode(SyncStorageNodeProto):
         except EOFError:
             pass
         except Exception as exc:
-            logger.debug("Client handler error (%s): %s", addr, exc)
+            logger.warning("Client handler error (%s): %s", addr, exc)
         finally:
             sock.close()
 

@@ -16,6 +16,10 @@ HEADER_SIZE = 4  # 4-byte big-endian length prefix
 # Payload values that are not msgpack-native (e.g. custom Python objects) are
 # serialised to bytes by the enc_hook and arrive on the wire as raw bytes.
 # The dec_hook re-hydrates those bytes via pickle.
+#
+# Thread safety: we use the module-level msgspec.msgpack.encode/decode
+# functions (not Encoder/Decoder instances) because the instance API reuses
+# an internal buffer and is not thread-safe.  The functional API is re-entrant.
 
 
 def _enc_hook(obj: object) -> bytes:
@@ -33,17 +37,18 @@ def _dec_hook(type: type, obj: object) -> object:
     raise TypeError(f"unexpected type {type}")
 
 
-_encoder = msgspec.msgpack.Encoder(enc_hook=_enc_hook)
-_decoder = msgspec.msgpack.Decoder(Message, dec_hook=_dec_hook)
-
-
 def encode_message(msg: Message) -> bytes:
     """Serialise a Message to msgpack bytes (public, for pre-encoding fan-out)."""
-    return _encoder.encode(msg)
+    return msgspec.msgpack.encode(msg, enc_hook=_enc_hook)
+
+
+def decode_message(data: bytes) -> Message:
+    """Deserialise msgpack bytes back to a Message."""
+    return msgspec.msgpack.decode(data, type=Message, dec_hook=_dec_hook)
 
 
 def _decode(data: bytes) -> Message:
-    return _decoder.decode(data)
+    return decode_message(data)
 
 
 def send_message(sock: socket.socket, msg: Message) -> None:

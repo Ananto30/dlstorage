@@ -17,14 +17,13 @@ epoll on Linux) and handles ALL socket reads.  Calling threads:
 This means N caller threads can have N requests in-flight simultaneously while
 only ONE OS thread does I/O.  No asyncio, no coroutines, no event loop.
 
-Same wire format as pool.py (4-byte big-endian length prefix + pickle body) so
-sync and async nodes remain wire-compatible.
+Same wire format as the async pool (4-byte big-endian length prefix + msgpack body)
+so sync and async nodes remain wire-compatible.
 """
 
 from __future__ import annotations
 
 import logging
-import pickle
 import queue as _queue
 import selectors
 import socket
@@ -32,7 +31,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 
-from dlstorage.connection_pool.wire import HEADER_SIZE
+from dlstorage.connection_pool.wire import HEADER_SIZE, decode_message, encode_message
 from dlstorage.types import Message
 
 from .interface import ConnectionPool as ConnectionPoolProtocol
@@ -98,7 +97,7 @@ class MuxConnectionPool(ConnectionPoolProtocol):
         if sock is None:
             return None
 
-        data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
+        data = encode_message(msg)
         hdr = len(data).to_bytes(HEADER_SIZE, "big")
         try:
             sock.sendall(hdr + data)  # synchronous; fast on loopback
@@ -249,7 +248,7 @@ class MuxConnectionPool(ConnectionPoolProtocol):
         else:
             # Body complete → deserialise and deliver
             try:
-                msg = pickle.loads(bytes(inflight.buf))  # noqa: S301
+                msg = decode_message(bytes(inflight.buf))
             except Exception as exc:
                 logger.debug("deserialise error: %s", exc)
                 self._fail(sock, inflight)

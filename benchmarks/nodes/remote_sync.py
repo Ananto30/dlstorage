@@ -22,13 +22,15 @@ import sys
 import time
 from pathlib import Path
 
+from dlstorage.discovery.gossip import GossipDiscovery
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from benchmarks.framework import print_results, sync_run_phase
 from dlstorage import StaticDiscovery, StorageNode
 from dlstorage.types import Message, MessageType
 
-DEFAULT_PEERS = ["127.0.0.1:7201", "127.0.0.1:7202", "127.0.0.1:7203"]
+DEFAULT_PEERS = ["100.123.219.14:7201"]
 DEFAULT_LOCAL_PORT = 7299
 REPLICATION = 2
 
@@ -43,7 +45,8 @@ def main(
     all_addrs = peers + [f"127.0.0.1:{local_port}"]
 
     node = StorageNode(
-        StaticDiscovery(all_addrs),
+        # StaticDiscovery(all_addrs),
+        GossipDiscovery(all_addrs[0]),
         host="127.0.0.1",
         port=local_port,
         replication=REPLICATION,
@@ -51,13 +54,19 @@ def main(
     node.start()
     time.sleep(0.2)
 
-    # Warm up one connection to each remote peer.
-    ping = Message(MessageType.PING, {})
-    for peer in node._ring.nodes():
-        if peer == node.info:
-            continue
-        for _ in range(min(concurrency, node._pool._max)):
-            node._pool.execute(peer.host, peer.port, ping)
+    print("Peers:", node.discovery.get_peers())
+    print("Ring:", node._ring.nodes())
+
+    # # Warm up one connection to each remote peer.
+    # ping = Message(MessageType.PING, "asdf")
+    # for peer in node.discovery.get_peers():
+    #     if peer == node.info:
+    #         continue
+    #     for _ in range(min(concurrency, node._pool._max)):
+    #         reply = node._pool.execute(peer.host, peer.port, ping)
+    #         print(f"Warm-up ping to {peer} … reply={reply}")
+    #         if reply.type != MessageType.PONG:
+    #             raise RuntimeError(f"unexpected reply from {peer}: {reply}")
 
     print(f"\ndlstorage REMOTE SYNC benchmark")
     print(f"  local node  : 127.0.0.1:{local_port}")
